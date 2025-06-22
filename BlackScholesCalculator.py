@@ -27,7 +27,7 @@ class BlackScholesCalculator:
         d2 = d1 - sigma * np.sqrt(T)
         return d1, d2
 
-    def call_option_price(self, S, K, T, r, sigma):
+    def call_option_price(self, S = 100, K = 100, T = 1, r = 0.05, sigma = 0.2):
         if T <= 0:
             return max(0, S - K) # Intrinsic value at expiration
         
@@ -35,7 +35,7 @@ class BlackScholesCalculator:
         price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
         return price
 
-    def put_option_price(self, S, K, T, r, sigma):
+    def put_option_price(self, S = 100, K = 100, T = 1, r = 0.05, sigma = 0.2):
         if T <= 0:
             return max(0, K - S) # Intrinsic value at expiration
         
@@ -103,7 +103,7 @@ class BlackScholesCalculator:
         else: # put
             return (-K * T * np.exp(-r * T) * norm.cdf(-d2)) / 100 # Per 1% rate change
         
-def implied_volatility_newton_raphson(market_price, S, K, T, r, option_type='call', initial_sigma=0.5, tolerance=1e-6, max_iterations=100):
+def ImpliedVolCalc(market_price, S, K, T, r, option_type='call', initial_sigma=0.5, tolerance=1e-6, max_iterations=100):
 
     bs_calc = BlackScholesCalculator() # Create an instance of the calculator
 
