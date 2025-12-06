@@ -1,11 +1,9 @@
-"""
-test_black_scholes.py
 
-Tests:
-- Black-Scholes price vs. market option price
-- Implied volatility vs. Yahoo IV
-- Error statistics and paired t-test
-"""
+#Tests:
+# - Black-Scholes price vs. market option price
+# - Implied volatility vs. Yahoo IV
+# - Error statistics and paired t-test
+
 
 import numpy as np
 import pandas as pd
@@ -23,9 +21,7 @@ MAX_BIDASK_SPREAD = 5.0    # skip broken options
 MAX_IV = 3.0               # skip insane implied vols
 PRINT_LIMIT = 10           # print first N detailed rows
 
-# -------------------------
 # Fetch stock + options
-# -------------------------
 ticker = yf.Ticker(TICKER)
 S = ticker.history(period="1d")["Close"].iloc[-1]
 
@@ -33,14 +29,11 @@ exp = ticker.options[0]  # nearest expiration
 chain = ticker.option_chain(exp)
 calls = chain.calls
 
-# -------------------------
+
 # Compute time to expiration
-# -------------------------
 T = (datetime.strptime(exp, "%Y-%m-%d") - datetime.utcnow()).days / 365
 
-# -------------------------
 # Clean option chain (filter bad data)
-# -------------------------
 df = calls.copy()
 df = df[df["volume"] > MIN_VOLUME]
 df = df[df["impliedVolatility"] < MAX_IV]
