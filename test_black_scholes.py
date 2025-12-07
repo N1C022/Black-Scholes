@@ -1,111 +1,102 @@
-
-#Tests:
-# - Black-Scholes price vs. market option price
-# - Implied volatility vs. Yahoo IV
-# - Error statistics and paired t-test
-
-
-import numpy as np
-import pandas as pd
-import yfinance as yf
-from datetime import datetime
-from scipy.stats import ttest_rel
-
-from black_scholes import bs_price, implied_vol_newton
-
-# Parameters
-TICKER = "AAPL"
-RISK_FREE_RATE = 0.045     # approximate
-MIN_VOLUME = 50            # avoid illiquid options
-MAX_BIDASK_SPREAD = 5.0    # skip broken options
-MAX_IV = 3.0               # skip insane implied vols
-PRINT_LIMIT = 10           # print first N detailed rows
-
-# Fetch stock + options
-ticker = yf.Ticker(TICKER)
-S = ticker.history(period="1d")["Close"].iloc[-1]
-
-exp = ticker.options[0]  # nearest expiration
-chain = ticker.option_chain(exp)
-calls = chain.calls
-
-
-# Compute time to expiration
-T = (datetime.strptime(exp, "%Y-%m-%d") - datetime.utcnow()).days / 365
-
-# Clean option chain (filter bad data)
-df = calls.copy()
-df = df[df["volume"] > MIN_VOLUME]
-df = df[df["impliedVolatility"] < MAX_IV]
-df = df[(df["ask"] - df["bid"]) < MAX_BIDASK_SPREAD]
-
-df = df.reset_index(drop=True)
-
-# Calculate BS price + recovered IV
-results = []
-
-for i, row in df.iterrows():
-    K = float(row["strike"])
-    market_price = float(row["lastPrice"])
-    market_iv = float(row["impliedVolatility"])
-    if market_price <= 0:
-        continue
-
-    # Black-Scholes theoretical price
-    bs_p = bs_price(S, K, T, RISK_FREE_RATE, market_iv, "call")
-
-    # Percentage difference
-    pct_diff = (bs_p - market_price) / market_price * 100
-
-    # Recovered implied volatility
-    recovered_iv = implied_vol_newton(
-        market_price, S, K, T, RISK_FREE_RATE, "call", initial_sigma=market_iv
-    )
-
-    results.append({
-        "Strike": K,
-        "Market Price": market_price,
-        "BS Price": bs_p,
-        "Pct Error (%)": pct_diff,
-        "Market IV": market_iv,
-        "Recovered IV": recovered_iv,
-        "IV Diff": recovered_iv - market_iv
-    })
-
-results_df = pd.DataFrame(results)
-
-# Summary Statistics
-
-mean_err = results_df["Pct Error (%)"].mean()
-median_err = results_df["Pct Error (%)"].median()
-corr = results_df[["Market Price", "BS Price"]].corr().iloc[0,1]
-
-# Paired t-test for price differences
-t_stat, p_value = ttest_rel(
-    results_df["BS Price"],
-    results_df["Market Price"]
+from black_scholes import (
+    bs_call_price, implied_vol_call,
+    mc_naive_call, mc_control_variate_call
 )
 
-# Print results
-print(f"\n===== Black-Scholes Test for {TICKER} ({exp}) =====")
-print(f"Current stock price: {S:.2f}")
-print(f"Options tested: {len(results_df)}")
-print("\n--- Summary Errors ---")
-print(f"Mean % error:   {mean_err:.4f}%")
-print(f"Median % error: {median_err:.4f}%")
-print(f"Correlation (BS vs Market): {corr:.4f}")
+import numpy as np
+import matplotlib.pyplot as plt
 
-print("\n--- Paired t-test ---")
-print(f"t-statistic: {t_stat:.4f}")
-print(f"p-value:     {p_value:.4f}")
-if p_value < 0.05:
-    print("→ Significant difference between BS and market prices")
-else:
-    print("→ No statistically significant difference")
 
-print("\n--- First few rows ---")
-print(results_df.head(PRINT_LIMIT))
+#   Core Validation Tests
 
-# save to CSV
-results_df.to_csv("bs_test_results.csv", index=False)
-print("\nSaved results to bs_test_results.csv")
+def test_monte_carlo_engines():
+    S0, K, r, sigma = 100, 100, 0.01, 0.25
+    T = 30/365
+    TRUE = bs_call_price(S0, K, T, r, sigma)
+    rng = np.random.default_rng(42)
+
+    n_paths = 50000
+    naive_mean, naive_var = mc_naive_call(S0, K, r, sigma, T, n_paths, rng=rng)
+    cv_mean, cv_var, b_opt = mc_control_variate_call(S0, K, r, sigma, T, n_paths, rng=rng)
+
+    print("\n==== Monte Carlo Tests ====")
+    print("Analytic BS price:", TRUE)
+    print("Naive MC:", naive_mean, "var =", naive_var)
+    print("Control Variate MC:", cv_mean, "var =", cv_var)
+    print("Variance Reduction =", naive_var / cv_var, "x")
+    print("Optimal b =", b_opt)
+
+
+def test_implied_vol():
+    S0, K, r, sigma = 100, 100, 0.01, 0.25
+    T = 0.5
+    true_price = bs_call_price(S0, K, T, r, sigma)
+    iv = implied_vol_call(true_price, S0, K, T, r)
+
+    print("\n==== Implied Volatility Test ====")
+    print("True vol:", sigma)
+    print("Recovered vol:", iv)
+
+
+#   Plot 1 — Generic Monte Carlo Convergence (1/N and 1/sqrt(N))
+
+def plot_mc_convergence():
+    n_list = np.array([500, 1000, 2000, 5000, 10000, 20000, 50000])
+    variances = 1 / n_list
+    errors = 1 / np.sqrt(n_list)
+
+    plt.figure(figsize=(8, 5))
+    plt.loglog(n_list, variances, marker='o', label="Variance ∼ 1/N")
+    plt.loglog(n_list, errors, marker='s', label="Error ∼ 1/√N")
+    plt.title("Monte Carlo Convergence Illustration")
+    plt.xlabel("Number of Paths (log scale)")
+    plt.ylabel("Magnitude (log scale)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("convergence_plot.png", dpi=200)
+    print("Saved convergence_plot.png")
+
+
+#   Plot 2 — Naive MC vs Control Variate Variance Reduction
+
+def plot_variance_reduction():
+    S0, K, r, sigma = 100, 100, 0.01, 0.25
+    T = 30 / 365
+    rng = np.random.default_rng(123)
+
+    n_list = [500, 1000, 2000, 5000, 10000, 20000, 50000]
+    naive_vars = []
+    cv_vars = []
+
+    for n in n_list:
+        _, naive_var = mc_naive_call(S0, K, r, sigma, T, n, rng=rng)
+        _, cv_var, _ = mc_control_variate_call(S0, K, r, sigma, T, n, rng=rng)
+
+        naive_vars.append(naive_var)
+        cv_vars.append(cv_var)
+
+    plt.figure(figsize=(8, 5))
+    plt.loglog(n_list, naive_vars, marker='o', label="Naive MC Variance")
+    plt.loglog(n_list, cv_vars, marker='s', label="Control Variate Variance")
+    plt.title("Variance Reduction: Naive vs Control Variate MC")
+    plt.xlabel("Number of Paths (log scale)")
+    plt.ylabel("Variance (log scale)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("variance_reduction_plot.png", dpi=200)
+    print("Saved variance_reduction_plot.png")
+
+
+#   Run All Tests + Generate Plots
+
+def run_all_tests():
+    test_monte_carlo_engines()
+    test_implied_vol()
+    plot_mc_convergence()
+    plot_variance_reduction()
+
+
+if __name__ == "__main__":
+    run_all_tests()
