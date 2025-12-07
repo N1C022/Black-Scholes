@@ -106,6 +106,6 @@ else:
 print("\n--- First few rows ---")
 print(results_df.head(PRINT_LIMIT))
 
-# Optionally save to CSV
+# save to CSV
 results_df.to_csv("bs_test_results.csv", index=False)
 print("\nSaved results to bs_test_results.csv")
