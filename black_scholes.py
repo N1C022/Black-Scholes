@@ -1,147 +1,100 @@
-"""
-black_scholes.py
-
-Provides:
-- bs_price: Black-Scholes price for European call/put
-- bs_greeks: delta, gamma, vega, theta, rho
-- implied_vol_newton: implied volatility via Newton-Raphson (with fallback to bisection)
-- example usage in __main__
-"""
-
 import numpy as np
-import scipy.stats as st
-from math import log, sqrt, exp
-from typing import Tuple
+from scipy.stats import norm
+#   Black–Scholes closed-form & Greeks
 
-EPS = 1e-12
-
-def _norm_pdf(x):
-    return st.norm.pdf(x)
-
-def _norm_cdf(x):
-    return st.norm.cdf(x)
-
-def bs_price(S: float, K: float, T: float, r: float, sigma: float, option_type: str = "call") -> float:
-    """
-    Black-Scholes price for European option.
-    S: spot price
-    K: strike
-    T: time to maturity in years (if 0, return intrinsic)
-    r: risk-free continuous rate
-    sigma: volatility (annualized)
-    option_type: "call" or "put"
-    """
+def bs_call_price(S, K, T, r, sigma):
+    #Black–Scholes price for a European call option
     if T <= 0:
-        if option_type == "call":
-            return max(S - K, 0.0)
-        else:
-            return max(K - S, 0.0)
-
+        return max(S - K, 0.0)
     d1 = (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
+    return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
 
-    if option_type == "call":
-        price = S * _norm_cdf(d1) - K * np.exp(-r * T) * _norm_cdf(d2)
-    else:
-        price = K * np.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
-
-    return float(price)
-
-def bs_greeks(S: float, K: float, T: float, r: float, sigma: float, option_type: str = "call") -> dict:
-    """
-    Returns Greeks: delta, gamma, vega, theta (per year), rho (per 1% rate)
-    Vega here is per 1 vol (so divide by 100 if vol in pct).
-    """
-    if T <= 0:
-        # At expiry: delta is step function; gamma, vega, theta -> 0
-        if option_type == "call":
-            delta = 1.0 if S > K else 0.0
-        else:
-            delta = 0.0 if S > K else -1.0
-        return {"delta": delta, "gamma": 0.0, "vega": 0.0, "theta": 0.0, "rho": 0.0}
-
+def d1_d2(S, K, T, r, sigma):
     d1 = (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
+    return d1, d2
 
-    pdf_d1 = _norm_pdf(d1)
-    delta = _norm_cdf(d1) if option_type == "call" else _norm_cdf(d1) - 1
-    gamma = pdf_d1 / (S * sigma * np.sqrt(T))
-    vega = S * pdf_d1 * np.sqrt(T)  # per 1 vol (i.e., sigma in decimal)
-    # theta: approximate per year (some use per day / 365)
-    if option_type == "call":
-        theta = (-S * pdf_d1 * sigma / (2 * np.sqrt(T))
-                 - r * K * np.exp(-r * T) * _norm_cdf(d2))
-    else:
-        theta = (-S * pdf_d1 * sigma / (2 * np.sqrt(T))
-                 + r * K * np.exp(-r * T) * _norm_cdf(-d2))
-    rho = K * T * np.exp(-r * T) * (_norm_cdf(d2) if option_type == "call" else -_norm_cdf(-d2))
+def bs_call_delta(S, K, T, r, sigma):
+    d1, _ = d1_d2(S, K, T, r, sigma)
+    return norm.cdf(d1)
 
-    return {"delta": float(delta), "gamma": float(gamma), "vega": float(vega),
-            "theta": float(theta), "rho": float(rho)}
+def bs_call_vega(S, K, T, r, sigma):
+    d1, _ = d1_d2(S, K, T, r, sigma)
+    return S * norm.pdf(d1) * np.sqrt(T)
 
-def implied_vol_newton(price: float, S: float, K: float, T: float, r: float,
-                       option_type: str = "call", initial_sigma: float = 0.2,
-                       tol: float = 1e-8, max_iter: int = 100) -> float:
-    """
-    Implied volatility via Newton-Raphson with vega as derivative.
-    Fallback to bisection if divergence or non-convergence.
-    """
+def bs_call_gamma(S, K, T, r, sigma):
+    d1, _ = d1_d2(S, K, T, r, sigma)
+    return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
-    if price <= 0:
-        return 0.0
+#   Implied Volatility Solver
 
-    sigma = initial_sigma
-    for i in range(max_iter):
-        bs_p = bs_price(S, K, T, r, sigma, option_type)
-        v = bs_greeks(S, K, T, r, sigma, option_type)["vega"]
-        diff = bs_p - price
+def implied_vol_call(target_price, S, K, T, r, tol=1e-8, max_iter=100):
 
-        if abs(diff) < tol:
-            return max(sigma, 0.0)
+    #Newton-Raphson implied volatility solver with bisection fallback.
 
-        # Avoid division by zero
-        if v < 1e-12:
+    sigma = 0.2  # initial guess
+    for _ in range(max_iter):
+        price = bs_call_price(S, K, T, r, sigma)
+        vega = bs_call_vega(S, K, T, r, sigma)
+
+        if abs(price - target_price) < tol:
+            return sigma
+
+        # avoid division by zero
+        if vega < 1e-8:
             break
 
-        sigma = sigma - diff / v
-        if sigma <= 0 or sigma > 5:  # unrealistic, fall back
+        sigma -= (price - target_price) / vega
+        if sigma <= 0:
             break
 
-    # Bisection fallback in [1e-6, 5]
-    low, high = 1e-6, 5.0
-    p_low = bs_price(S, K, T, r, low, option_type) - price
-    p_high = bs_price(S, K, T, r, high, option_type) - price
-    if p_low * p_high > 0:
-        # can't bracket: return current sigma clipped
-        return max(min(sigma, high), low)
-
-    for i in range(200):
+    # fallback: bisection
+    low, high = 1e-8, 5.0
+    for _ in range(200):
         mid = 0.5 * (low + high)
-        p_mid = bs_price(S, K, T, r, mid, option_type) - price
-        if abs(p_mid) < tol:
-            return mid
-        if p_low * p_mid <= 0:
+        price = bs_call_price(S, K, T, r, mid)
+        if price > target_price:
             high = mid
-            p_high = p_mid
         else:
             low = mid
-            p_low = p_mid
+        if abs(high - low) < tol:
+            return mid
+
     return mid
 
-if __name__ == "__main__":
-    # Example usage
-    S = 100.0
-    K = 100.0
-    T = 30 / 365  # 30 days
-    r = 0.01
-    sigma = 0.25
+#   Monte Carlo Engines
 
-    call_price = bs_price(S, K, T, r, sigma, "call")
-    put_price = bs_price(S, K, T, r, sigma, "put")
-    print("Call price:", call_price)
-    print("Put price:", put_price)
-    print("Call greeks:", bs_greeks(S, K, T, r, sigma, "call"))
+def simulate_terminal_stock(S0, r, sigma, T, n_paths, antithetic=False, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
 
-    # implied vol example: start with call price, recover sigma
-    implied = implied_vol_newton(call_price, S, K, T, r, "call", initial_sigma=0.2)
-    print("Recovered implied vol:", implied)
+    if antithetic:
+        half = n_paths // 2
+        z = rng.standard_normal(half)
+        z_all = np.concatenate([z, -z])
+        if n_paths % 2 == 1:
+            z_all = np.concatenate([z_all, rng.standard_normal(1)])
+    else:
+        z_all = rng.standard_normal(n_paths)
+
+    return S0 * np.exp((r - 0.5*sigma**2)*T + sigma*np.sqrt(T)*z_all)
+
+def mc_naive_call(S0, K, r, sigma, T, n_paths, antithetic=False, rng=None):
+    ST = simulate_terminal_stock(S0, r, sigma, T, n_paths, antithetic, rng)
+    discounted = np.exp(-r*T) * np.maximum(ST - K, 0)
+    return discounted.mean(), discounted.var(ddof=1)
+
+def mc_control_variate_call(S0, K, r, sigma, T, n_paths, antithetic=False, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ST = simulate_terminal_stock(S0, r, sigma, T, n_paths, antithetic, rng)
+    Y = np.exp(-r*T) * np.maximum(ST - K, 0)
+    X = np.exp(-r*T) * ST  # control variate, E[X] = S0
+
+    cov = np.cov(Y, X, ddof=1)
+    b_opt = cov[0,1] / cov[1,1]
+    Y_cv = Y - b_opt * (X - S0)
+
+    return Y_cv.mean(), Y_cv.var(ddof=1), b_opt
